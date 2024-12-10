@@ -37,9 +37,9 @@ int sys_Pipe(pipe_t* pipe)
 	// Initialize PIPE_CB
 	pipe->read = fid[0];
 	pipe->write = fid[1];
+
 	pipe_cb->reader = fcb[0];
 	pipe_cb->writer = fcb[1];
-
 	pipe_cb->has_space = COND_INIT;
 	pipe_cb->has_data = COND_INIT;
 
@@ -55,122 +55,161 @@ int sys_Pipe(pipe_t* pipe)
 	return 0;
 }
 
-int pipe_read(void* pipecb_t, char *buf, unsigned int size) {
+int pipe_write(void *pipecb_t, const char *buf, unsigned int size){
 
-	int i = 0;
-	int n = 0;
+	// Get the PIPE_CB
+	PIPE_CB *pipe_cb = (PIPE_CB *)pipecb_t;
 
-	PIPE_CB* pipe_cb = (PIPE_CB*) pipecb_t;
+	// Get the write position
+	int *w_position = &pipe_cb->w_position;
+	int bytes_written = 0;
 
-	if (pipe_cb->reader == NULL) // Reader has already exited
+	// Check if the writer is still alive
+	if (pipe_cb->reader == NULL || pipe_cb->writer == NULL){
+		
 		return -1;
-	else if (pipe_cb->writer == NULL && pipe_cb->current_size == 0) // Buffer is empty & writer has exited, can't read
-		return 0;
-
-	while (i < size) {
-
-		while (pipe_cb->current_size == 0 && pipe_cb->writer != NULL) {
-			kernel_broadcast(&pipe_cb->has_space);
-			kernel_wait(&pipe_cb->has_data, SCHED_PIPE);
-		}
-
-		if (pipe_cb->writer == NULL && pipe_cb->current_size == 0) // Writer exited & no more characters to write from buffer, exit
-			return i;
-
-		if ((n = (size - i)) < pipe_cb->current_size)
-			n = size - i;
-		else
-			n = pipe_cb->current_size;
-
-		if (n >= (PIPE_BUFFER_SIZE - pipe_cb->r_position))
-			n = PIPE_BUFFER_SIZE - pipe_cb->r_position;
-
-		memcpy(&(buf[i]), &(pipe_cb->buffer[pipe_cb->r_position]),n);
-
-		pipe_cb->r_position = (pipe_cb->r_position + n) % PIPE_BUFFER_SIZE;
-
-		pipe_cb->current_size = pipe_cb->current_size - n;
-		i = i + n;
-
-		kernel_broadcast(&pipe_cb->has_space); // Signal empty space within loop, wait for write
 	}
 
-	kernel_broadcast(&pipe_cb->has_space);
-
-	return i;
-}
-
-int pipe_write(void* pipecb_t, const char *buf, unsigned int size) {
 	
-	int i = 0;
-	int n;
-
-	PIPE_CB* pipe_cb = (PIPE_CB*) pipecb_t;
-
-	if (pipe_cb->reader == NULL || pipe_cb->writer == NULL)
-		return -1;
-
-	while (i < size) {
-
-		while (pipe_cb->current_size == PIPE_BUFFER_SIZE && pipe_cb->reader) {
+	int empty_space = PIPE_BUFFER_SIZE - pipe_cb->current_size; // Declare here!// Static for the initial state.
+	
+	while (pipe_cb->current_size == PIPE_BUFFER_SIZE && pipe_cb->reader != NULL){
+			
 			kernel_broadcast(&pipe_cb->has_data);
 			kernel_wait(&pipe_cb->has_space, SCHED_PIPE);
 		}
 
-		if (pipe_cb->reader == NULL || pipe_cb->writer == NULL)
-			return i;
+	// If the reader or the writer are closed, return -1
+	if (pipe_cb->reader == NULL){
+			
+			return -1;
+		}
 		
-		if ((n = (size - i)) < (PIPE_BUFFER_SIZE - pipe_cb->current_size))
-			n = size - i;
-		else
-			n = PIPE_BUFFER_SIZE - pipe_cb->current_size;
+    // Write the data to the buffer
+    while (bytes_written < size) {
 
-		if (n >= (PIPE_BUFFER_SIZE - pipe_cb->w_position))
-			n = PIPE_BUFFER_SIZE - pipe_cb->w_position;
-		
-		memcpy(&(pipe_cb->buffer[pipe_cb->w_position]), &(buf[i]), n);
-		assert(pipe_cb->w_position < PIPE_BUFFER_SIZE); // Test
+    
 
-		pipe_cb->w_position = (pipe_cb->w_position + n) % PIPE_BUFFER_SIZE;
+    	// Recalculate empty_space if needed (e.g., if current_size changes mid-loop).
+        if (pipe_cb->current_size != PIPE_BUFFER_SIZE - empty_space) {
+            empty_space = PIPE_BUFFER_SIZE - pipe_cb->current_size;
+        }
 
-		pipe_cb->current_size = pipe_cb->current_size + n;
-		i = i + n;
+       
+        int chunk_size = (size - bytes_written < empty_space) 
+                         ? size - bytes_written 
+                         : empty_space;
+
+        int copy_size = (chunk_size < PIPE_BUFFER_SIZE - *w_position) 
+                        ? chunk_size 
+                        : PIPE_BUFFER_SIZE - *w_position;
+
+        memcpy(&pipe_cb->buffer[*w_position], &buf[bytes_written], copy_size);
+        //assert(pipe_cb->w_position < PIPE_BUFFER_SIZE);
+
+        bytes_written += copy_size;
+        pipe_cb->current_size += copy_size;
+        *w_position = (*w_position + copy_size) % PIPE_BUFFER_SIZE;
 	}
 
+	// Wake up the reader
 	kernel_broadcast(&pipe_cb->has_data);
 
-	return i;
-
-}
-int pipe_writer_close(void* _pipecb) { // Test failure on read?
-
-	PIPE_CB* pipe_cb = (PIPE_CB*) _pipecb;
-	if (pipe_cb == NULL) // Invalid file id
-		return -1;
-
-	pipe_cb->writer = NULL;
-	
-	if (pipe_cb->reader != NULL) {
-		kernel_broadcast(&pipe_cb->has_data);
-		return 0;
-	}
-	free(pipe_cb);
-	return 0; //success
+	return bytes_written;
 }
 
-int pipe_reader_close(void* _pipecb) {
+int pipe_read(void *pipecb_t, char *buf, unsigned int size){
 
-	PIPE_CB* pipe_cb = (PIPE_CB*) _pipecb;
+	// Get the PIPE_CB
+	PIPE_CB *pipe_cb = (PIPE_CB *)pipecb_t;
 
-	if (pipe_cb == NULL) // Invalid file id
-		return -1;
+	// Get the read position
+	int *r_position = &pipe_cb->r_position;
+	int bytes_read = 0;
 
-	pipe_cb->reader = NULL;
-	
-	if (pipe_cb->writer != NULL) {
-		kernel_broadcast(&pipe_cb->has_space);
+	if(pipe_cb->writer == NULL && pipe_cb->current_size == 0){
+
 		return 0;
 	}
-	free(pipe_cb);
+	
+	while (bytes_read < size){
+
+		// If the buffer is empty, wait for the writer to write some data
+	while (pipe_cb->current_size == 0 && pipe_cb->writer != NULL){
+
+			//kernel_broadcast(&pipe_cb->has_space);
+			kernel_wait(&pipe_cb->has_data, SCHED_PIPE);
+		}
+
+		// If the writer is closed, return the number of bytes read
+		if (pipe_cb->writer == NULL){
+
+			return bytes_read;
+		}
+
+		 // Calculate how much to read
+        int chunk_size = (size - bytes_read < pipe_cb->current_size)
+                         ? size - bytes_read
+                         : pipe_cb->current_size;
+
+        int copy_size = (chunk_size < PIPE_BUFFER_SIZE - pipe_cb->r_position)
+                        ? chunk_size
+                        : PIPE_BUFFER_SIZE - pipe_cb->r_position;
+
+        // Copy data from the buffer
+        memcpy(&buf[bytes_read], &pipe_cb->buffer[pipe_cb->r_position], copy_size);
+
+        bytes_read += copy_size;
+        pipe_cb->current_size -= copy_size;
+        pipe_cb->r_position = (pipe_cb->r_position + copy_size) % PIPE_BUFFER_SIZE;
+
+        // Wake up the writer if space is now available
+       // kernel_broadcast(&pipe_cb->has_space);
+        }
+
+    kernel_broadcast(&pipe_cb->has_space);
+    return bytes_read;
+}
+
+int pipe_writer_close(void *_pipecb)
+{
+	// Ensure that the pipe is valid
+    PIPE_CB* pipe = (PIPE_CB*)_pipecb;
+
+    if (pipe == NULL) {  // Invalid pointer
+        return -1;  // Error, invalid pipe
+    }
+
+    // Close the writer
+    pipe->writer = NULL;
+
+    // If there is an active reader, broadcast to wake it up
+    if (pipe->reader != NULL) {
+        kernel_broadcast(&pipe->has_data);
+    } else {
+        // If no reader is available, free the pipe structure
+        free(pipe);  // Free memory, as no reader is present
+    }
+
+    return 0;  // Success
+}
+
+int pipe_reader_close(void *_pipecb)
+{
+	PIPE_CB* pipe = (PIPE_CB*) _pipecb;
+
+	if (pipe == NULL) // Invalid file id
+		return -1;
+
+	pipe->reader = NULL;
+	
+	// If there is an active writer, broadcast to wake it up
+	if (pipe->writer != NULL) {
+		kernel_broadcast(&pipe->has_space);
+	} else{
+		// If no writer is available, free the pipe structure
+		free(pipe);
+	}
+
 	return 0;
 }
