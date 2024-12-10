@@ -71,9 +71,14 @@ int pipe_write(void *pipecb_t, const char *buf, unsigned int size){
 	}
 
 	
-	int empty_space = PIPE_BUFFER_SIZE - pipe_cb->current_size; // Declare here!// Static for the initial state.
+	int empty_space = PIPE_BUFFER_SIZE - pipe_cb->current_size; 
 	
-	while (pipe_cb->current_size == PIPE_BUFFER_SIZE && pipe_cb->reader != NULL){
+	
+		
+    // Write the data to the buffer
+    while (bytes_written < size) {
+
+    while (pipe_cb->current_size == PIPE_BUFFER_SIZE && pipe_cb->reader != NULL){
 			
 			kernel_broadcast(&pipe_cb->has_data);
 			kernel_wait(&pipe_cb->has_space, SCHED_PIPE);
@@ -84,11 +89,6 @@ int pipe_write(void *pipecb_t, const char *buf, unsigned int size){
 			
 			return -1;
 		}
-		
-    // Write the data to the buffer
-    while (bytes_written < size) {
-
-    
 
     	// Recalculate empty_space if needed (e.g., if current_size changes mid-loop).
         if (pipe_cb->current_size != PIPE_BUFFER_SIZE - empty_space) {
@@ -137,7 +137,7 @@ int pipe_read(void *pipecb_t, char *buf, unsigned int size){
 		// If the buffer is empty, wait for the writer to write some data
 	while (pipe_cb->current_size == 0 && pipe_cb->writer != NULL){
 
-			//kernel_broadcast(&pipe_cb->has_space);
+			kernel_broadcast(&pipe_cb->has_space);
 			kernel_wait(&pipe_cb->has_data, SCHED_PIPE);
 		}
 
@@ -164,7 +164,7 @@ int pipe_read(void *pipecb_t, char *buf, unsigned int size){
         pipe_cb->r_position = (pipe_cb->r_position + copy_size) % PIPE_BUFFER_SIZE;
 
         // Wake up the writer if space is now available
-       // kernel_broadcast(&pipe_cb->has_space);
+          kernel_broadcast(&pipe_cb->has_space);
         }
 
     kernel_broadcast(&pipe_cb->has_space);
