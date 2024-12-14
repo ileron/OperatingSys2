@@ -13,6 +13,7 @@ int socket_read(void *socket_cb_t, char *buf, unsigned int n) {
 
 	socket_cb* socketcb = (socket_cb*) socket_cb_t;
 
+	// Ensure the socket is a peer and has a valid read pipe before reading
 	if (socketcb->type != SOCKET_PEER || socketcb->peer_s.read_pipe == NULL)
 		return -1;
 	
@@ -40,16 +41,19 @@ int socket_close(void *socket_cb_t) {
 	
 	socket_cb* socketcb = (socket_cb*) socket_cb_t;
 
+	// Handle listener socket type
 	if (socketcb->type == SOCKET_LISTENER) {
 
 		while (! is_rlist_empty(&socketcb->listener_s.queue)){
 			free(rlist_pop_front(&socketcb->listener_s.queue));
 		}
 
+		// Broadcast that the listener socket is no longer available for new connections
 		kernel_broadcast(&socketcb->listener_s.req_available);
 		
-		PORT_MAP[socketcb->port] = NULL;
+		PORT_MAP[socketcb->port] = NULL; //the listener is closed
 	}
+	// Handle peer socket type
 	else if (socketcb->type == SOCKET_PEER) {
 
 		pipe_reader_close(socketcb->peer_s.read_pipe);
@@ -83,7 +87,7 @@ Fid_t sys_Socket(port_t port)
 	}	
 		
 
-	if (FCB_reserve(1, &fid, &fcb) == NULL){
+	if (FCB_reserve(1, &fid, &fcb) == 0){
 		
 		return NOFILE; // Failed to acquire FCBs & fids.
 	}
@@ -111,10 +115,10 @@ int sys_Listen(Fid_t sock)
 		
 	socket_cb* socketcb = get_fcb(sock)->streamobj;
 
-	if (PORT_MAP[socketcb->port] != NULL || socketcb->port == NOPORT || socketcb->type != SOCKET_UNBOUND){  // Rest error conditions described in tinyos.h
+	if (socketcb == NULL || PORT_MAP[socketcb->port] != NULL || socketcb->port == NOPORT || socketcb->type != SOCKET_UNBOUND){  // Rest error conditions described in tinyos.h
 		
 		return -1;
-	} 
+	}
 
 	// Install socket to the PORTMAP[]	
 	PORT_MAP[socketcb->port] = socketcb; 
@@ -145,14 +149,16 @@ Fid_t sys_Accept(Fid_t lsock)
 
 	// While Request Queue is empty & socket has not exited
 	while (is_rlist_empty(&socketcb->listener_s.queue) && PORT_MAP[socketcb->port] != NULL){
-		kernel_wait(&socketcb->listener_s.req_available, SCHED_PIPE);//SCHED_PIPE);
+		 // Wait for a request to arrive.
+		kernel_wait(&socketcb->listener_s.req_available, SCHED_PIPE);//SCHED_PIPE); 
 	} 
 		
 	
 	if (PORT_MAP[socketcb->port] == NULL) { // Exited while waiting 
 		socketcb->refcount--;
 
-		if (socketcb->refcount < 0){ // den exei ksekatharistei
+		// Free the socket control block if no other references remain
+		if (socketcb->refcount < 0){ 
 			free(socketcb);
 		}
 
@@ -160,13 +166,16 @@ Fid_t sys_Accept(Fid_t lsock)
 	}
 
 	connection_request* req = (rlist_pop_front(&socketcb->listener_s.queue))->request; // Get request from queue
+	// Create a new socket for the accepted connection
 	Fid_t listen_peer = sys_Socket(socketcb->port);
 
+	// If socket creation fails, clean up and return NOFILE.
 	if (listen_peer == NOFILE){
 		socketcb->refcount--;	
 
 		kernel_signal(&req->connected_cv);
 
+		// Free the socket control block if no other references remain.
 		if (socketcb->refcount < 0){
 			free(socketcb);
 		}
@@ -178,18 +187,22 @@ Fid_t sys_Accept(Fid_t lsock)
 	socket_cb* clientp = req->peer;
 	socket_cb* listenp = get_fcb(listen_peer)->streamobj;
 
+	// Initialize pipes for the client and listener
 	PIPE_CB* p1 = initialize_socket_pipe();
 	PIPE_CB* p2 = initialize_socket_pipe();
 
+	// Set up the pipes for communication between the client and listener.
 	clientp->peer_s.read_pipe = p1;
 	clientp->peer_s.write_pipe = p2;
 
 	listenp->peer_s.read_pipe = p2;
 	listenp->peer_s.write_pipe = p1;
 
+	// Set the socket types to SOCKET_PEER to indicate they are connected peers
 	clientp->type = SOCKET_PEER;
 	listenp->type = SOCKET_PEER;
 
+	// Set mutual peer references between the client and listener for bidirectional communication
 	clientp->peer_s.peer = listenp;
 	listenp->peer_s.peer = clientp;
 
@@ -200,6 +213,7 @@ Fid_t sys_Accept(Fid_t lsock)
 		free(socketcb);
 	}
 
+	// Signal the connection requester that the connection has been established
 	kernel_signal(&(req->connected_cv));
 
 	return listen_peer;
@@ -272,14 +286,17 @@ int sys_ShutDown(Fid_t sock, shutdown_mode how)
 
 	switch (how) { // Close pipes
 		case SHUTDOWN_READ:
+			// Close the read pipe for the peer socket and make the reference null
 			pipe_reader_close(socketcb->peer_s.read_pipe);
 			socketcb->peer_s.read_pipe = NULL;
 			break;
 		case SHUTDOWN_WRITE:
+			// Close the write pipe for the peer socket and make the reference null
 			pipe_writer_close(socketcb->peer_s.write_pipe);
 			socketcb->peer_s.write_pipe = NULL;
 			break;
 		case SHUTDOWN_BOTH:
+			// Close the read and write pipes for the peer socket and make both the references null
 			pipe_writer_close(socketcb->peer_s.write_pipe);
 			socketcb->peer_s.write_pipe = NULL;
 			pipe_reader_close(socketcb->peer_s.read_pipe);

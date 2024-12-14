@@ -359,6 +359,7 @@ int procinfo_read(void* procinfo_cb_t, char* buf, unsigned int n) {
  
   procinfo_cb* procinfocb = (procinfo_cb*) procinfo_cb_t;
 
+  // Validate inputs
   if (procinfocb == NULL || buf == NULL || procinfocb->pcb_cursor > MAX_PROC-1 || procinfocb->pcb_cursor < 0)
     return -1;
 
@@ -366,11 +367,14 @@ int procinfo_read(void* procinfo_cb_t, char* buf, unsigned int n) {
 
   PCB* pcb = &PT[procinfocb->pcb_cursor];
 
+  // Skip processes marked as FREE
   while (pcb->pstate == FREE) {
     procinfocb->pcb_cursor++;
-    if (procinfocb->pcb_cursor >= MAX_PROC)
-        return -1;
-
+    if (procinfocb->pcb_cursor >= MAX_PROC){
+      // End of process table reached without finding a valid process
+      return -1;
+    }
+        
     pcb = &PT[procinfocb->pcb_cursor];
   }
   
@@ -380,7 +384,10 @@ int procinfo_read(void* procinfo_cb_t, char* buf, unsigned int n) {
     memcpy(&proc_info.args, pcb->args, proc_info.argl);
   }
 
+  // Copy the process information to the buffer
   memcpy(buf, &proc_info, sizeof(proc_info));
+
+  // Move the cursor to the next process for the next read operation.
   procinfocb->pcb_cursor++;
 
   return sizeof(procinfo);
@@ -397,17 +404,21 @@ int procinfo_close(void* procinfo_cb_t) {
 
 void take_ProcessInfo(procinfo* procinfo, PCB* pcb) {
 
-  if (pcb->pstate == ALIVE)
-    procinfo->alive = 1;
+  if (pcb->pstate == ALIVE)  
+    procinfo->alive = 1;   // Process is alive
   else if (pcb->pstate == ZOMBIE)
-    procinfo->alive = 0;
+    procinfo->alive = 0;   // Process is a zombie
 
   procinfo->main_task = pcb->main_task;
+
+  // Store the total number of threads associated with the process
   procinfo->thread_count = pcb->thread_count;
 
   procinfo->argl = pcb->argl;
 
   procinfo->pid = get_pid(pcb);
+
+  // Retrieve and store the process's parent PID 
   procinfo->ppid = get_pid(pcb->parent);
 
 }
