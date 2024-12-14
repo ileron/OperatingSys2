@@ -3,7 +3,7 @@
 #include "kernel_cc.h"
 #include "kernel_proc.h"
 #include "kernel_streams.h"
-
+#include "kernel_procinfo.h"
 /*
  The process table and related system calls:
  - Exec
@@ -339,5 +339,75 @@ void sys_Exit(int exitval)
 
 Fid_t sys_OpenInfo()
 {
-  return NOFILE;
+  FCB* fcb;
+  Fid_t fid;
+
+  if(!FCB_reserve(1, &fid, &fcb)) // available file ids exhausted
+    return NOFILE;
+
+
+  procinfo_cb* procinfocb = (procinfo_cb*) xmalloc(sizeof(procinfo_cb));
+  procinfocb->pcb_cursor = 0;
+
+  fcb->streamobj = procinfocb;
+  fcb->streamfunc = &procinfo_ops;
+
+  return fid;
+}
+
+int procinfo_read(void* procinfo_cb_t, char* buf, unsigned int n) {
+ 
+  procinfo_cb* procinfocb = (procinfo_cb*) procinfo_cb_t;
+
+  if (procinfocb == NULL || buf == NULL || procinfocb->pcb_cursor > MAX_PROC-1 || procinfocb->pcb_cursor < 0)
+    return -1;
+
+  procinfo proc_info = procinfocb->procinfo;
+
+  PCB* pcb = &PT[procinfocb->pcb_cursor];
+
+  while (pcb->pstate == FREE) {
+    procinfocb->pcb_cursor++;
+    if (procinfocb->pcb_cursor >= MAX_PROC)
+        return -1;
+
+    pcb = &PT[procinfocb->pcb_cursor];
+  }
+  
+  take_ProcessInfo(&proc_info, pcb);
+
+  if (pcb->args != NULL){
+    memcpy(&proc_info.args, pcb->args, proc_info.argl);
+  }
+
+  memcpy(buf, &proc_info, sizeof(proc_info));
+  procinfocb->pcb_cursor++;
+
+  return sizeof(procinfo);
+}
+
+
+int procinfo_close(void* procinfo_cb_t) {
+  //procinfo_cb* procinfocb = (procinfo_cb*) procinfo_cb_t;
+  
+  free((procinfo_cb*) procinfo_cb_t);
+
+  return 0;
+}
+
+void take_ProcessInfo(procinfo* procinfo, PCB* pcb) {
+
+  if (pcb->pstate == ALIVE)
+    procinfo->alive = 1;
+  else if (pcb->pstate == ZOMBIE)
+    procinfo->alive = 0;
+
+  procinfo->main_task = pcb->main_task;
+  procinfo->thread_count = pcb->thread_count;
+
+  procinfo->argl = pcb->argl;
+
+  procinfo->pid = get_pid(pcb);
+  procinfo->ppid = get_pid(pcb->parent);
+
 }
