@@ -186,13 +186,19 @@ PIPE_CB* initialize_socket_pipe() { // Initialization without FCB/Fid for socket
     fcb[0] = (FCB *)xmalloc(sizeof(FCB)); // Allocate reader FCB
     fcb[1] = (FCB *)xmalloc(sizeof(FCB)); // Allocate writer FCB
 
-    // Check for allocation failure
-    if (fcb[0] == NULL || fcb[1] == NULL) {
-        if (fcb[0]) free(fcb[0]); // Free reader if already allocated
-        if (fcb[1]) free(fcb[1]); // Free writer if already allocated
-        free(pipecb);             // Free PIPE_CB
-        return NULL;
+    // Check for allocation failure and clean up if necessary
+		if (fcb[0] == NULL || fcb[1] == NULL) {
+
+    	if (fcb[0] != NULL) {
+        free(fcb[0]); // Free allocated reader
     }
+    	if (fcb[1] != NULL) {
+        free(fcb[1]); // Free allocated writer
+    }
+    
+    free(pipecb); // Free the PIPE_CB structure
+    return NULL;  // Return NULL to indicate failure
+}
 
     // Initialize the PIPE_CB fields
     pipecb->reader = fcb[0];
